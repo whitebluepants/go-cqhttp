@@ -79,6 +79,7 @@ func Main() {
 		panic(err)
 	}
 
+	log.SetReportCaller(true)
 	consoleFormatter := global.LogFormat{EnableColor: base.LogColorful}
 	fileFormatter := global.LogFormat{EnableColor: false}
 	log.AddHook(global.NewLocalHook(w, consoleFormatter, fileFormatter, global.GetLogLevel(base.LogLevel)...))

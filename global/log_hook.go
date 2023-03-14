@@ -3,6 +3,7 @@ package global
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -107,6 +108,9 @@ func (hook *LocalHook) SetPath(path string) {
 	hook.path = path
 }
 
+// CWD 记录当前工作路径
+var CWD string
+
 // NewLocalHook 初始化本地日志钩子实现
 func NewLocalHook(args interface{}, consoleFormatter, fileFormatter logrus.Formatter, levels ...logrus.Level) *LocalHook {
 	hook := &LocalHook{
@@ -114,6 +118,13 @@ func NewLocalHook(args interface{}, consoleFormatter, fileFormatter logrus.Forma
 	}
 	hook.SetFormatter(consoleFormatter, fileFormatter)
 	hook.levels = append(hook.levels, levels...)
+
+	// 这里是否需要处理error呢, 感觉有点多余. 如果获取不到工作路径那就显示完整路径也没啥, 不至于退出
+	var err error
+	CWD, err = os.Getwd()
+	if err != nil {
+		log.Fatalf("初始化logrus失败: 工作目录获取失败 %v", err)
+	}
 
 	switch arg := args.(type) {
 	case string:
@@ -187,6 +198,11 @@ func (f LogFormat) Format(entry *logrus.Entry) ([]byte, error) {
 	buf.WriteString(entry.Time.Format("2006-01-02 15:04:05"))
 	buf.WriteString("] [")
 	buf.WriteString(strings.ToUpper(entry.Level.String()))
+	// 显示文件和代码行数需要配置logrus.SetReportCaller(true)
+	if entry.HasCaller() {
+		buf.WriteString("] [")
+		buf.WriteString(fmt.Sprintf("%s:%d", strings.TrimPrefix(entry.Caller.File, CWD), entry.Caller.Line))
+	}
 	buf.WriteString("]: ")
 	buf.WriteString(entry.Message)
 	buf.WriteString(" \n")
