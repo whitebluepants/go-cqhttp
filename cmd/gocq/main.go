@@ -16,9 +16,12 @@ import (
 	"github.com/Mrs4s/MiraiGo/client"
 	para "github.com/fumiama/go-hide-param"
 	rotatelogs "github.com/lestrrat-go/file-rotatelogs"
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/term"
+
+	"github.com/Mrs4s/go-cqhttp/internal/download"
 
 	"github.com/Mrs4s/go-cqhttp/coolq"
 	"github.com/Mrs4s/go-cqhttp/db"
@@ -41,8 +44,12 @@ var allowStatus = [...]client.UserOnlineStatus{
 	client.StatusGaming, client.StatusVacationing, client.StatusWatchingTV, client.StatusFitness,
 }
 
-// Main 启动主程序
-func Main() {
+// InitBase 解析参数并检测
+//
+//	如果在 windows 下双击打开了程序，程序将在此函数释出脚本后终止；
+//	如果传入 -h 参数，程序将打印帮助后终止；
+//	如果传入 -d 参数，程序将在启动 daemon 后终止。
+func InitBase() {
 	base.Parse()
 	if !base.FastStart && terminal.RunningByDoubleClick() {
 		err := terminal.NoMoreDoubleClick()
@@ -50,7 +57,7 @@ func Main() {
 			log.Errorf("遇到错误: %v", err)
 			time.Sleep(time.Second * 5)
 		}
-		return
+		os.Exit(0)
 	}
 	switch {
 	case base.LittleH:
@@ -65,7 +72,10 @@ func Main() {
 		}
 	}
 	base.Init()
+}
 
+// PrepareData 准备 log, 缓存, 数据库, 必须在 InitBase 之后执行
+func PrepareData() {
 	rotateOptions := []rotatelogs.Option{
 		rotatelogs.WithRotationTime(time.Hour * 24),
 	}
@@ -96,13 +106,17 @@ func Main() {
 	mkCacheDir(global.VideoPath, "视频")
 	mkCacheDir(global.CachePath, "发送图片")
 	mkCacheDir(path.Join(global.ImagePath, "guild-images"), "频道图片缓存")
+	mkCacheDir(global.VersionsPath, "版本缓存")
 	cache.Init()
 
 	db.Init()
 	if err := db.Open(); err != nil {
 		log.Fatalf("打开数据库失败: %v", err)
 	}
+}
 
+// LoginInteract 登录交互, 可能需要键盘输入, 必须在 InitBase, PrepareData 之后执行
+func LoginInteract() {
 	var byteKey []byte
 	arg := os.Args
 	if len(arg) > 1 {
@@ -139,12 +153,13 @@ func Main() {
 	}
 	if !global.PathExists("device.json") {
 		log.Warn("虚拟设备信息不存在, 将自动生成随机设备.")
-		client.GenRandomDevice()
-		_ = os.WriteFile("device.json", client.SystemDeviceInfo.ToJson(), 0o644)
+		device = client.GenRandomDevice()
+		_ = os.WriteFile("device.json", device.ToJson(), 0o644)
 		log.Info("已生成设备信息并保存到 device.json 文件.")
 	} else {
 		log.Info("将使用 device.json 内的设备信息运行Bot.")
-		if err := client.SystemDeviceInfo.ReadJson([]byte(global.ReadAllText("device.json"))); err != nil {
+		device = new(client.DeviceInfo)
+		if err := device.ReadJson([]byte(global.ReadAllText("device.json"))); err != nil {
 			log.Fatalf("加载设备信息失败: %v", err)
 		}
 	}
@@ -206,10 +221,27 @@ func Main() {
 		time.Sleep(time.Second * 5)
 	}
 	log.Info("开始尝试登录并同步消息...")
-	log.Infof("使用协议: %s", client.SystemDeviceInfo.Protocol)
+	log.Infof("使用协议: %s", device.Protocol.Version())
 	cli = newClient()
+	cli.UseDevice(device)
 	isQRCodeLogin := (base.Account.Uin == 0 || len(base.Account.Password) == 0) && !base.Account.Encrypt
 	isTokenLogin := false
+
+	if isQRCodeLogin && cli.Device().Protocol != 2 {
+		log.Warn("当前协议不支持二维码登录, 请配置账号密码登录.")
+		os.Exit(0)
+	}
+
+	// 加载本地版本信息, 一般是在上次登录时保存的
+	versionFile := path.Join(global.VersionsPath, fmt.Sprint(int(cli.Device().Protocol))+".json")
+	if global.PathExists(versionFile) {
+		b, err := os.ReadFile(versionFile)
+		if err == nil {
+			_ = cli.Device().Protocol.Version().UpdateFromJson(b)
+		}
+		log.Infof("从文件 %s 读取协议版本 %v.", versionFile, cli.Device().Protocol.Version())
+	}
+
 	saveToken := func() {
 		base.AccountToken = cli.GenToken()
 		_ = os.WriteFile("session.token", base.AccountToken, 0o644)
@@ -240,6 +272,7 @@ func Main() {
 				cli.Disconnect()
 				cli.Release()
 				cli = newClient()
+				cli.UseDevice(device)
 			} else {
 				isTokenLogin = true
 			}
@@ -250,6 +283,23 @@ func Main() {
 		cli.PasswordMd5 = base.PasswordHash
 	}
 	if !isTokenLogin {
+		if !base.Account.DisableProtocolUpdate {
+			log.Infof("正在检查协议更新...")
+			oldVersionName := device.Protocol.Version().String()
+			remoteVersion, err := getRemoteLatestProtocolVersion(int(device.Protocol.Version().Protocol))
+			if err == nil {
+				if err = device.Protocol.Version().UpdateFromJson(remoteVersion); err == nil {
+					if device.Protocol.Version().String() != oldVersionName {
+						log.Infof("已自动更新协议版本: %s -> %s", oldVersionName, device.Protocol.Version().String())
+					} else {
+						log.Infof("协议已经是最新版本")
+					}
+					_ = os.WriteFile(versionFile, remoteVersion, 0o644)
+				}
+			} else if err.Error() != "remote version unavailable" {
+				log.Warnf("检查协议更新失败: %v", err)
+			}
+		}
 		if !isQRCodeLogin {
 			if err := commonLogin(); err != nil {
 				log.Fatalf("登录时发生致命错误: %v", err)
@@ -327,7 +377,13 @@ func Main() {
 	servers.Run(coolq.NewQQBot(cli))
 	log.Info("资源初始化完成, 开始处理信息.")
 	log.Info("アトリは、高性能ですから!")
+}
 
+// WaitSignal 在新线程检查更新和网络并等待信号, 必须在 InitBase, PrepareData, LoginInteract 之后执行
+//
+//   - 直接返回: os.Interrupt, syscall.SIGTERM
+//   - dump stack: syscall.SIGQUIT, syscall.SIGUSR1
+func WaitSignal() {
 	go func() {
 		selfupdate.CheckUpdate()
 		selfdiagnosis.NetworkDiagnosis(cli)
@@ -388,6 +444,23 @@ func newClient() *client.QQClient {
 	}
 	c.SetLogger(protocolLogger{})
 	return c
+}
+
+var remoteVersions = map[int]string{
+	1: "https://raw.githubusercontent.com/RomiChan/protocol-versions/master/android_phone.json",
+	6: "https://raw.githubusercontent.com/RomiChan/protocol-versions/master/android_pad.json",
+}
+
+func getRemoteLatestProtocolVersion(protocolType int) ([]byte, error) {
+	url, ok := remoteVersions[protocolType]
+	if !ok {
+		return nil, errors.New("remote version unavailable")
+	}
+	response, err := download.Request{URL: url}.Bytes()
+	if err != nil {
+		return download.Request{URL: "https://ghproxy.com/" + url}.Bytes()
+	}
+	return response, nil
 }
 
 type protocolLogger struct{}

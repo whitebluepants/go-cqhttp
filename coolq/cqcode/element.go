@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/Mrs4s/MiraiGo/binary"
-
 	"github.com/Mrs4s/go-cqhttp/global"
 )
 
