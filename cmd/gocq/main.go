@@ -369,6 +369,10 @@ func LoginInteract() {
 	log.Infof("开始加载群列表...")
 	global.Check(cli.ReloadGroupList(), true)
 	log.Infof("共加载 %v 个群.", len(cli.GroupList))
+	log.Debugf("打印群聊信息")
+	for i, g := range cli.GroupList {
+		log.Debugf("第%d个群: %+v", i, g)
+	}
 	if uint(base.Account.Status) >= uint(len(allowStatus)) {
 		base.Account.Status = 0
 	}

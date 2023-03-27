@@ -716,3 +716,27 @@ func (bot *CQBot) checkMedia(e []message.IMessageElement, sourceID int64) {
 		}
 	}
 }
+
+func (bot *CQBot) groupMessageEvent2(c *client.QQClient, m *message.GroupMessage) {
+	log.Debug("-------测试专用 群消息事件回调-----------")
+	bot.checkMedia(m.Elements, m.GroupCode)
+
+	for _, elem := range m.Elements {
+		if _, ok := elem.(*message.AtElement); ok {
+			// 存放消息的所有元素
+			newElem := make([]message.IMessageElement, 0)
+			newElem = append(newElem, message.NewAt(m.Sender.Uin))
+			newElem = append(newElem, message.NewText("这是一条At响应文本"))
+
+			// 作为事件函数, 直接调底层函数就好了, bot.SendGroupMessage是一个封装好的对外函数
+			// mid, err := bot.SendGroupMessage
+			ret := bot.Client.SendGroupMessage(m.GroupCode, &message.SendingMessage{
+				Elements: newElem,
+			})
+			if ret == nil || ret.Id == -1 {
+				log.Warnf("警告: 消息发送失败")
+			}
+			log.Debugf("消息ID = %v", ret.Id)
+		}
+	}
+}

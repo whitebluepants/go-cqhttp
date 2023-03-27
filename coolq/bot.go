@@ -77,6 +77,7 @@ func NewQQBot(cli *client.QQClient) *CQBot {
 	}
 	bot.Client.PrivateMessageEvent.Subscribe(bot.privateMessageEvent)
 	bot.Client.GroupMessageEvent.Subscribe(bot.groupMessageEvent)
+	bot.Client.GroupMessageEvent.Subscribe(bot.groupMessageEvent2)
 	if base.ReportSelfMessage {
 		bot.Client.SelfPrivateMessageEvent.Subscribe(bot.privateMessageEvent)
 		bot.Client.SelfGroupMessageEvent.Subscribe(bot.groupMessageEvent)
